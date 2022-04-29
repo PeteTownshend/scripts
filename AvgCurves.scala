@@ -1,4 +1,4 @@
-val srv  = new Service("script", Some(ds), Some(cds)) with Containers with Markets with Lim2
+val srv  = new Service("script", Some(dsPrd), Some(cdsUat)) with Containers with Markets with Lim2
 
 val asof = yesterday
 
