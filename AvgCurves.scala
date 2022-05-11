@@ -1,8 +1,11 @@
-val srv  = new Service("script", Some(ds), Some(cds)) with Containers with Markets with Lim2
+val srv  = new Service("prd", Some(dsPrd), Some(cdsPrd)) with Containers with Markets with Lim2
+val srv2  = new Service("uat", Some(dsUat), Some(cdsUat)) with Containers with Markets with Lim2
 
 val asof = yesterday
 
 implicit val wb = FO_SUPPORT
+
+log info modelReturnMap(200, "AvgCurves started")
 
 val fo35FobAraBAvg = for {
 	foM0  <- srv.GoEndurCurves.Fo35FobAraBMonthlyAvgUsd get asof flatMap { _.series } map { s => Series(s.head) }
@@ -14,5 +17,5 @@ val iceBrentAvg = for {
 	brentFwd <- srv.OilEodFc.IceBrentSwap get asof flatMap { _.series } map { _ from (brentM0.start + 1) }
 } yield brentM0 ++ brentFwd
 
-fo35FobAraBAvg map { srv.OilEodFc.Fo35FobAraBargesMonthlyAvgUsd.getOrCreate(asof) <-- _ }
-iceBrentAvg map { srv.OilEodFc.IceBrentSwapMonthlyAvgUsd.getOrCreate(asof) <-- _ }
+fo35FobAraBAvg map { srv2.OilEodFc.Fo35FobAraBargesMonthlyAvgUsd.getOrCreate(asof) <-- _ }
+iceBrentAvg map { srv2.OilEodFc.IceBrentSwapMonthlyAvgUsd.getOrCreate(asof) <-- _ }
