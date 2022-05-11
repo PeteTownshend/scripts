@@ -1,5 +1,5 @@
 val prd  = new Service("prd", Some(dsPrd), Some(cdsPrd)) with Containers with Markets with Lim2
-val int  = new Service("int", Some(dsInt), Some(cdsInt)) with Containers with Markets with Lim2
+val int  = new Service("int", Some(dsDev), Some(cdsDev)) with Containers with Markets with Lim2
 
 val asof = yesterday //running at 4:10 for previous day
 
