@@ -3,7 +3,7 @@
     val uat = new Service("uat", Some(dsUat), Some(cdsUat)) with Containers with Markets with Lim2
     implicit val wb = FO_SUPPORT
 
-    val asof = Day(config getString "END_OF_DAY")
+    val asof = yesterday
     val supply = Year(2022) to Year(2025)
     def check(series: Series[Day, Double], tag: String) = {
       if (series.start > Day(supply.head)) {
