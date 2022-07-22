@@ -1,6 +1,5 @@
 
     val prd = new Service("prd", Some(dsPrd), Some(cdsPrd)) with Containers with Markets with Lim2
-    val uat = new Service("uat", Some(dsUat), Some(cdsUat)) with Containers with Markets with Lim2
     implicit val wb = FO_SUPPORT
 
     val asof = yesterday
@@ -18,6 +17,7 @@
       series
     }
 
+    log info "CREATE STATIC TIMESERIES ..."
     val wpVolumes = supply.toSeries(_ => 450000.0)
     val mbmVolumes = supply.toSeries(_ => 70000.0)
     val biopMpp3Volumes = supply.toSeries(_ => 3294.1)
@@ -25,10 +25,11 @@
     val heaviesVolumes = supply.toSeries(_ => 26000.0)
     val markup = supply.toSeries(_ => 17.0)
     val correctionFactor = supply.toSeries(_ => 0.6)
-    log info "VOLUMES DEFINED"
+    log info "... DONE, VOLUMES DEFINED"
 
     val efficiency = 0.4
 
+    log info "READING FORWARDCURVES FROM CDS/DS ..."
     val coal = change(check(prd.CoalApi2Fc.Mid(asof).getSeries, "coal")) to Year
     val carbon = change(check(prd.CarbonEuaFc.EcxMid(asof).getSeries, "carbon")) to Year
 
@@ -54,8 +55,9 @@
       val woodPelletsCifAraMidUsd = new prd.BiomassEodFc.ForwardCurveStream[Day, Day]("WOOD_PELLETS_CIF_ARA_MID_USD_%s")
       check(woodPelletsCifAraMidUsd(asof).getSeries, "wood pellets")
     }).to(Year)
+    log info "... DONE, GOT FWD CURVES"
 
-    log info "GOT FWD CURVES"
+    log info "CREATE BIOMASS CURVE FROM INPUTS ..."
     val subsidySum = {
       val subsidy = (-power + 105d).max(0d)
       ((biopMpp3Volumes * 50d).min(biopContractedVolumes * 17.5)  + mbmVolumes * 17.5 + wpVolumes * 17.5) * efficiency * subsidy / 3.6}
@@ -73,10 +75,13 @@
     val totalVolume = wpVolumes * 17.5 + mbmVolumes * 17.5 + biopMpp3Volumes * 50d + heaviesVolumes * 38.1
 
     val bioMass = change((costSum - subsidySum) * 17.5 / totalVolume).to(Day)
+    log info "... DONE, BIOMASS CREATED"
 
-    object BiomassEodFc extends uat.Container("BIOMASS_EOD_FC") with uat.ForwardCurveContainer {
+    log info "STORING RESULT IN CDS/DS ..."
+    object BiomassEodFc extends prd.Container("BIOMASS_EOD_FC") with prd.ForwardCurveContainer {
 
-      object BiomassEur extends ForwardCurveStream[Day, Day]("BIOMASS_EUR_TEST_%s")
+      object BiomassEur extends ForwardCurveStream[Day, Day]("BIOMASS_EUR_%s")
     }
 
     BiomassEodFc.BiomassEur.getOrCreate(asof) <-- bioMass
+    log info "... DONE, BIOMASS CURVE CREATED AND STORED"
