@@ -9,11 +9,11 @@ val in = new Service("prd", Some(dsPrd), Some(cdsPrd)) with Containers with Mark
 val out = new Service("uat", Some(dsUat), Some(cdsUat)) with Containers with Markets with Lim2
 implicit val wb = RISK_CALCULATOR
 
-val tradingDate = Day(config.getString("END_OF_DAY"))
+val tradingDate = yesterday
 val tradingMonth = Month(tradingDate)
 val horizon = tradingDate + 59.months
 val golden = out.Masterdataprices
-val inOverrideMode = config.getString("OVERRIDE").toUpperCase == "TRUE"
+val inOverrideMode = True
 
 def v[T](ot: Option[T])(error: String): V[Throwable, T] =
   ot.fold(new Throwable(error).failure[T])(_.success[Throwable])
