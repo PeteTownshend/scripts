@@ -18,7 +18,7 @@ val skip_holidays: Int = V {
   case Success(value) if 0 <= value && value <= 2 => value
   case _ => log warn s"please set SKIP_HOLIDAYS to correct number of non quoting days"; 0
 }
-val tradingDate = Day(config.getString("END_OF_DAY"))
+val tradingDate = yesterday
 val tradingDateFormatted = tradingDate.toString("yyyy-MM-dd")
 val golden = uat.Masterdataprices
 
