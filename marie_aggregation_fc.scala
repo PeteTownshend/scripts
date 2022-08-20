@@ -13,7 +13,7 @@ val tradingDate = yesterday
 val tradingMonth = Month(tradingDate)
 val horizon = tradingDate + 59.months
 val golden = out.Masterdataprices
-val inOverrideMode = True
+val inOverrideMode = true
 
 def v[T](ot: Option[T])(error: String): V[Throwable, T] =
   ot.fold(new Throwable(error).failure[T])(_.success[Throwable])
