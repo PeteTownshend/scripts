@@ -6,14 +6,46 @@ import eet.io.cds.DataRow
 import org.joda.time.{DateTime, DateTimeZone}
 import com.eon.servers.common.binarydata.datatables.DataColumn
 import scala.util.Try
-    
-sealed trait Load
-case object Peak extends Load
-case object Base extends Load
 
 val prd = new Service("prd", Some(dsPrd), Some(cdsPrd)) with Containers with Markets with Lim2
 val uat = new Service("uat", Some(dsUat), Some(cdsUat)) with Containers with Markets with Lim2
 implicit val wb = RISK_CALCULATOR
+
+def isHoliday(day: Day): Boolean = day.isWeekend || List(
+  Day(2022, 1, 3),
+  Day(2022, 4, 14),
+  Day(2022, 4, 15),
+  Day(2022, 4, 18),
+  Day(2022, 5, 2),
+  Day(2022, 5, 17),
+  Day(2022, 5, 26),
+  Day(2022, 6, 2),
+  Day(2022, 6, 3),
+  Day(2022, 6, 6),
+  Day(2022, 8, 29),
+  Day(2022, 10, 3),
+  Day(2022, 10, 31),
+  Day(2022, 12, 26),
+  Day(2022, 12, 27),
+  Day(2023, 1, 2),
+  Day(2023, 4, 6),
+  Day(2023, 4, 7),
+  Day(2023, 4, 10),
+  Day(2023, 5, 1),
+  Day(2023, 5, 17),
+  Day(2023, 5, 18),
+  Day(2023, 5, 29),
+  Day(2023, 8, 28),
+  Day(2023, 10, 3),
+  Day(2023, 12, 25),
+  Day(2023, 12, 26)
+).contains(day)
+
+def formerWorkingDay(day: Day): Day = {
+  var d = day
+  while (isHoliday(d)) d -= 1
+  d
+}
 
 val skip_holidays: Int = V {
   config.getString("SKIP_HOLIDAYS").toInt
@@ -21,7 +53,7 @@ val skip_holidays: Int = V {
   case Success(value) if 0 <= value && value <= 2 => value
   case _ => log warn s"please set SKIP_HOLIDAYS to correct number of non quoting days"; 0
 }
-val tradingDate = yesterday
+val tradingDate = formerWorkingDay(yesterday)
 val tradingDateFormatted = tradingDate.toString("yyyy-MM-dd")
 val golden = uat.Masterdataprices
 
@@ -100,7 +132,8 @@ def vUpdate[T](bucketName: String, masterdataprices: golden.Entity, goldenSource
   }
   if (updateCondition) {
     val row = goldenSource.newRow()
-    val tz: DateTimeZone = TimeZone.forID(market.timeZoneName)
+    //val tz: DateTimeZone = TimeZone.forID(market.timeZoneName)
+    val tz: DateTimeZone = TimeZone.forID("Europe/Berlin")
     row.setValue(1, tradingDate.dateTime.withZone(tz)) //tradingDate.toString("yyyy-MM-dd")
 
     // Done: handle gaps in prices update
@@ -136,11 +169,40 @@ def vUpdate[T](bucketName: String, masterdataprices: golden.Entity, goldenSource
 }
 
 List(
-  ("volatility_eod", "fd_fo_ng_the_m", "ng_fo_the_m_dc", Markets.GERMANY, None),
-  ("volatility_eod", "fd_fo_power_deu_base_m", "fd_fo_power_deu_base_m_dc", Markets.GERMANY, Some(Base)),
-  ("volatility_eod", "fd_fo_power_deu_base_q", "fd_fo_power_deu_base_q_dc", Markets.GERMANY, Some(Base)),
-  ("volatility_eod", "fd_fo_power_deu_base_y", "fd_fo_power_deu_base_y_dc", Markets.GERMANY, Some(Base)),
-) foreach { case (containerName, bucketName, goldenSourceName, market, oLoad) =>
+  // HINT: market used to format TimeZone for eod date in target dataTable (first column),
+  // hard coded to use Germany ("Europe/Berline") forall, see line 144
+  // Carbon, coal, gas
+  ("volatility_eod", "fd_fo_carbon_eua_y", "fd_fo_carbon_eua_y_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_carbon_uka_y", "fd_fo_carbon_uka_y_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_coal_api2_m", "fd_fo_coal_api2_m_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_coal_api2_q", "fd_fo_coal_api2_q_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_coal_api2_y", "fd_fo_coal_api2_y_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_ng_jkm_m", "ng_fo_jkm_m_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_ng_nbp_m", "ng_fo_nbp_m_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_ng_the_m", "ng_fo_the_m_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_ng_ttf_m", "ng_fo_ttf_m_dc", Markets.GERMANY),
+  // Power
+  ("volatility_eod", "fd_fo_power_deu_base_m", "fd_fo_power_deu_base_m_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_deu_base_q", "fd_fo_power_deu_base_q_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_deu_base_y", "fd_fo_power_deu_base_y_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_esp_base_m", "fd_fo_power_esp_base_m_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_esp_base_q", "fd_fo_power_esp_base_q_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_esp_base_y", "fd_fo_power_esp_base_y_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_fra_base_m", "fd_fo_power_fra_base_m_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_fra_base_q", "fd_fo_power_fra_base_q_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_fra_base_y", "fd_fo_power_fra_base_y_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_ita_base_m", "fd_fo_power_ita_base_m_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_ita_base_q", "fd_fo_power_ita_base_q_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_ita_base_y", "fd_fo_power_ita_base_y_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_ned_base_m", "fd_fo_power_ned_base_m_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_ned_base_q", "fd_fo_power_ned_base_q_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_ned_base_y", "fd_fo_power_ned_base_y_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_sys_base_m", "fd_fo_power_sys_base_m_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_sys_base_q", "fd_fo_power_sys_base_q_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_sys_base_y", "fd_fo_power_sys_base_y_dc", Markets.GERMANY),
+  ("volatility_eod", "fd_fo_power_uk_base_m", "fd_fo_power_uk_base_m_dc", Markets.GERMANY),
+
+) foreach { case (containerName, bucketName, goldenSourceName, market) =>
 
   if (skip_holidays == 0) {
     log info s"------------------------------------------------------------------"
