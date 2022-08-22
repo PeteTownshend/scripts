@@ -9,60 +9,6 @@ val in = new Service("prd", Some(dsPrd), Some(cdsPrd)) with Containers with Mark
 val out = new Service("uat", Some(dsUat), Some(cdsUat)) with Containers with Markets with Lim2
 implicit val wb = RISK_CALCULATOR
 
-val tradingDate = yesterday
-val tradingMonth = Month(tradingDate)
-val horizon = tradingDate + 59.months
-val golden = out.Masterdataprices
-val inOverrideMode = true
-
-def v[T](ot: Option[T])(error: String): V[Throwable, T] =
-  ot.fold(new Throwable(error).failure[T])(_.success[Throwable])
-
-def isPeak(dt: DateTime): Boolean = {
-  val hour = Hour(dt).hour
-  val day = Day(dt)
-  !day.isWeekend && 8 <= hour && hour < 20
-}
-
-def vUpdate(goldenSource: DataTable, prices: Series[Month, Double]): V[Throwable, DataTable] = V {
-  val row = goldenSource.newRow()
-  row.setValue(1, tradingDate.toString("yyyy-MM-dd"))
-  prices.values.zipWithIndex foreach { case (price, column) => row.setValue(column + 2, price) }
-  goldenSource.addRow(row)
-  goldenSource
-}
-
-def formerPrices(goldenSource: DataTable): V[Throwable, (Day, Series[Month, Double])] = V {
-  val row = goldenSource.last
-  val td = Day(row.getValue("TRADED_DATE").asInstanceOf[String])
-  val m00 = Month(td)
-  (td, (0 to 59).toSeries(c =>
-    row.getValue(s"""M${"0"*(2-c.toString.length)}$c""").asInstanceOf[Double]
-  ).mapTime(m00 + _))
-}
-
-def vFromFwdDataTable(market: MarketLike, load: Load, container: in.Entity, bucketName: String): Day => V[Throwable, Series[Month, Double]] = tday => for {
-  bucket <- v(container get s"${bucketName}_$tday")(s"forward curve bucket $bucketName not available")
-  dataTable <- v(bucket.dataTable)(s"forward curve data table $bucketName not available")
-  result <- V {
-    val zone = DateTimeZone.forID(market.timeZoneName)
-    val ts = Series(
-      dataTable.toArray map { row =>
-        val t = row.getValue("START_DATE").asInstanceOf[DateTime].withZone(zone)
-        val x = row.getValue("VALUE").asInstanceOf[Double]
-        (t, x)
-      }
-    )
-    val loaded = load match {
-      case Peak => ts.filterTime(isPeak)
-      case _ => ts
-    }
-    val mthly = loaded.rollBy({ case (t, _) => Month(t) })(_.mean)
-    val result = (tradingMonth to horizon).toSeries(mthly.getOrElse(_, Double.NaN))
-    if (result.forall(_._2.isNaN)) throw new Throwable(s"at $tday within valid horizon prices are NaN at all") else result
-  }
-} yield result
-
 def isHoliday(day: Day): Boolean = day.isWeekend || List(
   Day(2022, 1, 3),
   Day(2022, 4, 14),
@@ -93,10 +39,44 @@ def isHoliday(day: Day): Boolean = day.isWeekend || List(
   Day(2023, 12, 26)
 ).contains(day)
 
-val lastWorkingDay: Day = {
-  var day = tradingDate - 1
-  while (isHoliday(day)) day -= 1
-  day
+def formerWorkingDay(day: Day): Day = {
+  var d = day
+  while (isHoliday(d)) d -= 1
+  d
+}
+
+val tradingDate = formerWorkingDay(yesterday)
+val tradingMonth = Month(tradingDate)
+val horizon = tradingDate + 59.months
+val golden = out.Masterdataprices
+val inOverrideMode = true
+
+def v[T](ot: Option[T])(error: String): V[Throwable, T] =
+  ot.fold(new Throwable(error).failure[T])(_.success[Throwable])
+
+def isPeak(dt: DateTime): Boolean = {
+  val hour = Hour(dt).hour
+  val day = Day(dt)
+  !day.isWeekend && 8 <= hour && hour < 20
+}
+
+def vUpdate(goldenSource: DataTable, prices: Series[Month, Double]): V[Throwable, DataTable] = V {
+  val row = goldenSource.newRow()
+  row.setValue(1, tradingDate.toString("yyyy-MM-dd"))
+  prices.values.zipWithIndex foreach { case (price, column) => row.setValue(column + 2, price) }
+  goldenSource.addRow(row)
+  goldenSource
+}
+
+def formerPrices(goldenSource: DataTable): V[Throwable, (Day, Series[Month, Double])] = V {
+  val row = goldenSource.last
+  val td = Day(row.getValue("TRADED_DATE").asInstanceOf[String])
+  if (td < formerWorkingDay(tradingDate)) (td, Series.empty[Month, Double]) else {
+    val m00 = Month(td)
+    (td, (0 to 59).toSeries(c =>
+      row.getValue(s"""M${"0" * (2 - c.toString.length)}$c""").asInstanceOf[Double]
+    ).mapTime(m00 + _))
+  }
 }
 
 if (isHoliday(tradingDate))
@@ -119,11 +99,14 @@ else {
 
       masterdataprices <- v(golden get goldenSourceName)(s"golden source $goldenSourceName not available")
       source <- v(masterdataprices.dataTable)(s"data table of golden source $goldenSourceName is missing")
+      _ <- V(log info s"got data table of golden source $goldenSourceName")
       (lastTradingDate, lastPrices) <- formerPrices(source)
-      //_ <- V { if (lastTradingDate == tradingDate && !inOverrideMode) throw new Throwable("traded day exists already") }
+      _ <- V(log info s"got last entry $lastTradingDate of golden source $goldenSourceName")
+      _ <- V { if (lastTradingDate == tradingDate && !inOverrideMode) throw new Throwable("traded day exists already") }
       container <- v(in get containerName)(s"forward curve container $containerName not available")
       bucket <- v(container get s"${bucketName}_$tradingDate")(s"forward curve bucket $bucketName not available")
       dataTable <- v(bucket.dataTable)(s"forward curve data table $bucketName not available")
+      _ <- V(log info s"got data table of forward curve ${containerName}.$bucketName")
       prices <- V {
         val zone = DateTimeZone.forID(market.timeZoneName)
         val ts = Series(
@@ -145,23 +128,31 @@ else {
           case Nil =>
             tail
 
-          case m00 :: Nil =>
+          case m00 :: Nil if lastPrices.isDefinedAt(m00) =>
             Series(m00 -> lastPrices(m00)) ++ tail
 
-          case m00 :: rem =>
+          case m00 :: rem if lastPrices.isDefinedAt(m00) =>
             Series(m00 -> lastPrices(m00)) ++ rem.toSeries(_ => tail.firstValue) ++ tail
+
+          case _ =>
+            throw new Throwable(s"as fall back no former M00 given from former trading date")
         }
       }
+      _ <- V(log info "derived monthly prices from forward curve container")
       newSource <- vUpdate(source, prices)
-    } yield masterdataprices.writeToCds(newSource)
+      result <- V(masterdataprices.writeToCds(newSource))
+
+    } yield result
 
     vResult match {
 
-      case Success(result) =>
+      case Success(_) =>
         log info s"updated $goldenSourceName"
 
       case Failure(throwable: Throwable) =>
         log error s"failed to update $goldenSourceName due to ${throwable.getMessage}"
     }
+    
+    log info "----------------------------------------------------------------------"
   }
 }
