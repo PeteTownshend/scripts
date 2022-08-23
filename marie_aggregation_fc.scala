@@ -140,7 +140,9 @@ List(
     }
     if oMthly.forall(_._2.isEmpty)
     _ <- V(log info s"got price update")
+    _ <- V(if (true) oMthly.foreach(println))
     tail <- V(Interpolate.flatRight(oMthly))
+    _ <- V(log info s"got prices flatRight")
     prices <- V {
 
       oMthly.takeWhile(_._2.isEmpty).time.toList match {
