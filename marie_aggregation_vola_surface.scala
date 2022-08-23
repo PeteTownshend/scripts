@@ -123,7 +123,8 @@ def vUpdate[T](bucketName: String, masterdataprices: golden.Entity, goldenSource
   val lastDay: Day = {
     val lastRow: DataRow = goldenSource.getRow(goldenSource.getRowCount - 1)
     val firstColumn: DataColumn = goldenSource.getColumn(1)
-    Day(new DateTime(lastRow.getValue(firstColumn)))
+    val dt = new DateTime(lastRow.getValue(firstColumn))
+    Day(dt.withZone(DateTimeZone.forID("Europe/Berlin")))
   }
   val lastDayFormatted = lastDay.toString("yyyy-MM-dd")
   val updateCondition: Boolean = {
