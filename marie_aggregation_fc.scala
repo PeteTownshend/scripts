@@ -8,6 +8,7 @@ case object Nope extends Load
 val in = new Service("prd", Some(dsPrd), Some(cdsPrd)) with Containers with Markets with Lim2
 val out = new Service("uat", Some(dsUat), Some(cdsUat)) with Containers with Markets with Lim2
 implicit val wb = RISK_CALCULATOR
+val layout = "----------------------------------------------------------------------"
 
 def isHoliday(day: Day): Boolean = day.isWeekend || List(
   Day(2022, 1, 3),
@@ -49,7 +50,7 @@ val tradingDate = formerWorkingDay(yesterday)
 val tradingMonth = Month(tradingDate)
 val horizon = tradingDate + 59.months
 val golden = out.Masterdataprices
-val inOverrideMode = true
+val inOverrideMode = false
 
 def v[T](ot: Option[T])(error: String): V[Throwable, T] =
   ot.fold(new Throwable(error).failure[T])(_.success[Throwable])
@@ -83,6 +84,7 @@ if (isHoliday(tradingDate))
   log info s"golden sources won't be updated because $tradingDate is not a trading date"
 else {
   log info s"updating golden sources for trading date $tradingDate"
+  log info layout
 
   List(
 
@@ -116,26 +118,40 @@ else {
             (t, x)
           }
         )
-        val loaded = load match {
-          case Peak => ts.filterTime(isPeak)
-          case _ => ts
+        log info s"fwd prices starting at: ${ts.start}"
+        log info s"           ending   at: ${ts.end}"
+        log info s"           are regular: ${ts.mapTime(_.getMillis).isRegular}"
+        val loaded = load.asInstanceOf[Load] match {
+          case Peak =>
+            log info "filtering for peak hours"
+            ts.filterTime(isPeak)
+          case _ =>
+            ts
         }
         val mthly = loaded.rollBy({ case (t, _) => Month(t) })(_.mean)
+        log info s"monthly prices starting at: ${mthly.start}"
+        log info s"               ending   at: ${mthly.end}"
         val oMthly = (tradingMonth to horizon).toSeries(mthly.get)
         val tail = Interpolate.flatRight(oMthly)
         oMthly.takeWhile(_._2.isEmpty).time.toList match {
 
           case Nil =>
+            log info "M00 provided by forward curve"
             tail
 
           case m00 :: Nil if lastPrices.isDefinedAt(m00) =>
-            Series(m00 -> lastPrices(m00)) ++ tail
+            val lst = lastPrices(m00)
+            log warn s"only M00 was missing and got assigned by fallback from former trading date: $m00 -> $lst"
+            Series(m00 -> lst) ++ tail
 
           case m00 :: rem if lastPrices.isDefinedAt(m00) =>
-            Series(m00 -> lastPrices(m00)) ++ rem.toSeries(_ => tail.firstValue) ++ tail
+            val lst = lastPrices(m00)
+            log warn s"M00 was missing and got assigned by fallback from former trading date: $m00 -> $lst"
+            log warn "additional values got filled up from right"
+            Series(m00 -> lst) ++ rem.toSeries(_ => tail.firstValue) ++ tail
 
           case _ =>
-            throw new Throwable(s"as fall back no former M00 given from former trading date")
+            throw new Throwable(s"as fall back no former M00 given from former trading date ")
         }
       }
       _ <- V(log info "derived monthly prices from forward curve container")
@@ -152,7 +168,7 @@ else {
       case Failure(throwable: Throwable) =>
         log error s"failed to update $goldenSourceName due to ${throwable.getMessage}"
     }
-    
-    log info "----------------------------------------------------------------------"
+
+    log info layout
   }
 }
