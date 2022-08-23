@@ -41,16 +41,18 @@ def isHoliday(day: Day): Boolean = day.isWeekend || List(
 ).contains(day)
 
 def formerWorkingDay(day: Day): Day = {
-  var d = day
+  var d = day - 1
   while (isHoliday(d)) d -= 1
   d
 }
 
-val tradingDate = formerWorkingDay(yesterday)
+val tradingDate = formerWorkingDay(today)
+log info s"updating golden sources for trading date $tradingDate"
+log info layout
+
 val tradingMonth = Month(tradingDate)
 val horizon = tradingDate + 59.months
 val golden = out.Masterdataprices
-val inOverrideMode = false
 
 def v[T](ot: Option[T])(error: String): V[Throwable, T] =
   ot.fold(new Throwable(error).failure[T])(_.success[Throwable])
@@ -61,114 +63,121 @@ def isPeak(dt: DateTime): Boolean = {
   !day.isWeekend && 8 <= hour && hour < 20
 }
 
-def vUpdate(goldenSource: DataTable, prices: Series[Month, Double]): V[Throwable, DataTable] = V {
-  val row = goldenSource.newRow()
-  row.setValue(1, tradingDate.toString("yyyy-MM-dd"))
-  prices.values.zipWithIndex foreach { case (price, column) => row.setValue(column + 2, price) }
-  goldenSource.addRow(row)
-  goldenSource
-}
-
-def formerPrices(goldenSource: DataTable): V[Throwable, (Day, Series[Month, Double])] = V {
-  val row = goldenSource.last
-  val td = Day(row.getValue("TRADED_DATE").asInstanceOf[String])
-  if (td < formerWorkingDay(tradingDate)) (td, Series.empty[Month, Double]) else {
-    val m00 = Month(td)
-    (td, (0 to 59).toSeries(c =>
-      row.getValue(s"""M${"0" * (2 - c.toString.length)}$c""").asInstanceOf[Double]
-    ).mapTime(m00 + _))
+def vUpdate(goldenSource: DataTable, prices: Series[Month, Double]): V[Throwable, DataTable] =
+  if (prices.isEmpty)
+    Failure(new Throwable("no golden update because no proper prices provided"))
+  else V {
+    val row = goldenSource.newRow()
+    row.setValue(1, tradingDate.toString("yyyy-MM-dd"))
+    prices.values.zipWithIndex foreach { case (price, column) => row.setValue(column + 2, price) }
+    goldenSource.addRow(row)
+    goldenSource
   }
-}
 
-if (isHoliday(tradingDate))
-  log info s"golden sources won't be updated because $tradingDate is not a trading date"
-else {
-  log info s"updating golden sources for trading date $tradingDate"
-  log info layout
-
-  List(
-
-    ("ng_ttf_fc", "mid", Markets.DUTCH, Nope, "ttfgaspriceshaped"),
-    ("ng_ttf_fc", "mid_flat", Markets.DUTCH, Nope, "ttfgaspriceunshaped"),
-    ("power_deu_fc", "mid", Markets.GERMANY, Base, "deupowpricebaseshaped"),
-    ("power_deu_fc", "mid", Markets.GERMANY, Peak, "deupowpricepeakshaped"),
-    ("power_deu_fc", "mid_flat", Markets.GERMANY, Base, "deupowpricebaseunshaped"),
-    ("power_deu_fc", "mid_flat", Markets.GERMANY, Peak, "deupowpricepeakunshaped")
-
-  ) foreach { case (containerName, bucketName, market, load, goldenSourceName) =>
-
-    val vResult = for {
-
-      masterdataprices <- v(golden get goldenSourceName)(s"golden source $goldenSourceName not available")
-      source <- v(masterdataprices.dataTable)(s"data table of golden source $goldenSourceName is missing")
-      _ <- V(log info s"got data table of golden source $goldenSourceName")
-      (lastTradingDate, lastPrices) <- formerPrices(source)
-      _ <- V(log info s"got last entry $lastTradingDate of golden source $goldenSourceName")
-      _ <- V { if (lastTradingDate == tradingDate && !inOverrideMode) throw new Throwable("traded day exists already") }
-      container <- v(in get containerName)(s"forward curve container $containerName not available")
-      bucket <- v(container get s"${bucketName}_$tradingDate")(s"forward curve bucket $bucketName not available")
-      dataTable <- v(bucket.dataTable)(s"forward curve data table $bucketName not available")
-      _ <- V(log info s"got data table of forward curve ${containerName}.$bucketName")
-      prices <- V {
-        val zone = DateTimeZone.forID(market.timeZoneName)
-        val ts = Series(
-          dataTable.toArray map { row =>
-            val t = row.getValue("START_DATE").asInstanceOf[DateTime].withZone(zone)
-            val x = row.getValue("VALUE").asInstanceOf[Double]
-            (t, x)
-          }
-        )
-        log info s"fwd prices starting at: ${ts.start}"
-        log info s"           ending   at: ${ts.end}"
-        log info s"           are regular: ${ts.mapTime(_.getMillis).isRegular}"
-        val loaded = load.asInstanceOf[Load] match {
-          case Peak =>
-            log info "filtering for peak hours"
-            ts.filterTime(isPeak)
-          case _ =>
-            ts
-        }
-        val mthly = loaded.rollBy({ case (t, _) => Month(t) })(_.mean)
-        log info s"monthly prices starting at: ${mthly.start}"
-        log info s"               ending   at: ${mthly.end}"
-        val oMthly = (tradingMonth to horizon).toSeries(mthly.get)
-        val tail = Interpolate.flatRight(oMthly)
-        oMthly.takeWhile(_._2.isEmpty).time.toList match {
-
-          case Nil =>
-            log info "M00 provided by forward curve"
-            tail
-
-          case m00 :: Nil if lastPrices.isDefinedAt(m00) =>
-            val lst = lastPrices(m00)
-            log warn s"only M00 was missing and got assigned by fallback from former trading date: $m00 -> $lst"
-            Series(m00 -> lst) ++ tail
-
-          case m00 :: rem if lastPrices.isDefinedAt(m00) =>
-            val lst = lastPrices(m00)
-            log warn s"M00 was missing and got assigned by fallback from former trading date: $m00 -> $lst"
-            log warn "additional values got filled up from right"
-            Series(m00 -> lst) ++ rem.toSeries(_ => tail.firstValue) ++ tail
-
-          case _ =>
-            throw new Throwable(s"as fall back no former M00 given from former trading date ")
-        }
-      }
-      _ <- V(log info "derived monthly prices from forward curve container")
-      newSource <- vUpdate(source, prices)
-      result <- V(masterdataprices.writeToCds(newSource))
-
-    } yield result
-
-    vResult match {
-
-      case Success(_) =>
-        log info s"updated $goldenSourceName"
-
-      case Failure(throwable: Throwable) =>
-        log error s"failed to update $goldenSourceName due to ${throwable.getMessage}"
+def vFormerPrices(goldenSource: DataTable): V[Throwable, (Day, Series[Month, Double])] = {
+  val formerTradingDate = formerWorkingDay(tradingDate)
+  if (goldenSource.isEmpty)
+    (formerTradingDate, Series.empty[Month, Double]).success
+  else V {
+    val row = goldenSource.last
+    val td = Day(row.getValue("TRADED_DATE").asInstanceOf[String])
+    if (td < formerTradingDate) (td, Series.empty[Month, Double]) else {
+      val m00 = Month(td)
+      (td, (0 to 59).toSeries(c =>
+        row.getValue(s"""M${"0" * (2 - c.toString.length)}$c""").asInstanceOf[Double]
+      ).mapTime(m00 + _))
     }
-
-    log info layout
   }
+}
+
+List(
+
+  ("ng_ttf_fc", "mid", Markets.DUTCH, Nope, "ttfgaspriceshaped"),
+  ("ng_ttf_fc", "mid_flat", Markets.DUTCH, Nope, "ttfgaspriceunshaped"),
+  ("power_deu_fc", "mid", Markets.GERMANY, Base, "deupowpricebaseshaped"),
+  ("power_deu_fc", "mid", Markets.GERMANY, Peak, "deupowpricepeakshaped"),
+  ("power_deu_fc", "mid_flat", Markets.GERMANY, Base, "deupowpricebaseunshaped"),
+  ("power_deu_fc", "mid_flat", Markets.GERMANY, Peak, "deupowpricepeakunshaped")
+
+) foreach { case (containerName, bucketName, market, load, goldenSourceName) =>
+
+  val zone = DateTimeZone.forID(market.timeZoneName)
+
+  val vResult = for {
+
+    masterdataprices <- v(golden get goldenSourceName)(s"golden source $goldenSourceName not available")
+    source <- v(masterdataprices.dataTable)(s"data table of golden source $goldenSourceName is missing")
+    _ <- V(log info s"got data table of golden source $goldenSourceName")
+    (lastTradingDate, lastPrices) <- vFormerPrices(source)
+    _ <- V(log info s"got last entry $lastTradingDate of golden source $goldenSourceName")
+    _ <- V { if (lastTradingDate == tradingDate) throw new Throwable("traded day exists already") }
+    container <- v(in get containerName)(s"forward curve container $containerName not available")
+    bucket <- v(container get s"${bucketName}_$tradingDate")(s"forward curve bucket $bucketName not available")
+    dataTable <- v(bucket.dataTable)(s"forward curve data table $bucketName not available")
+    _ <- V(log info s"got data table of forward curve ${containerName}.$bucketName")
+    oMthly <- V {
+      val ts = Series(
+        dataTable.toArray map { row =>
+          val t = row.getValue("START_DATE").asInstanceOf[DateTime].withZone(zone)
+          val x = row.getValue("VALUE").asInstanceOf[Double]
+          (t, x)
+        }
+      )
+      log info s"fwd prices starting at: ${ts.start}"
+      log info s"           ending   at: ${ts.end}"
+      log info s"           are regular: ${ts.mapTime(_.getMillis).isRegular}"
+      val loaded = load.asInstanceOf[Load] match {
+        case Peak =>
+          log info "filtering for peak hours"
+          ts.filterTime(isPeak)
+        case _ =>
+          ts
+      }
+      val mthly = loaded.rollBy({ case (t, _) => Month(t) })(_.mean)
+      log info s"monthly prices starting at: ${mthly.start}"
+      log info s"               ending   at: ${mthly.end}"
+      (tradingMonth to horizon).toSeries(mthly.get)
+    }
+    if oMthly.forall(_._2.isEmpty)
+    _ <- V(log info s"got price update")
+    tail <- V(Interpolate.flatRight(oMthly))
+    prices <- V {
+
+      oMthly.takeWhile(_._2.isEmpty).time.toList match {
+
+        case Nil =>
+          log info "M00 provided by forward curve"
+          tail
+
+        case m00 :: Nil if lastPrices.isDefinedAt(m00) =>
+          val lst = lastPrices(m00)
+          log warn s"only M00 was missing and got assigned by fallback from former trading date: $m00 -> $lst"
+          Series(m00 -> lst) ++ tail
+
+        case m00 :: rem if lastPrices.isDefinedAt(m00) =>
+          val lst = lastPrices(m00)
+          log warn s"M00 was missing and got assigned by fallback from former trading date: $m00 -> $lst"
+          log warn "additional values got filled up from right"
+          Series(m00 -> lst) ++ rem.toSeries(_ => tail.firstValue) ++ tail
+
+        case _ =>
+          throw new Throwable(s"as fall back no former M00 given from former trading date ")
+      }
+    }
+    _ <- V(log info "derived monthly prices from forward curve container")
+    newSource <- vUpdate(source, prices)
+    result <- V(masterdataprices.writeToCds(newSource))
+
+  } yield result
+
+  vResult match {
+
+    case Success(_) =>
+      log info s"updated $goldenSourceName"
+
+    case Failure(throwable: Throwable) =>
+      log error s"failed to update $goldenSourceName due to ${throwable.getMessage}"
+  }
+
+  log info layout
 }
