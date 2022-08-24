@@ -42,7 +42,7 @@ def isHoliday(day: Day): Boolean = day.isWeekend || List(
 ).contains(day)
 
 def formerWorkingDay(day: Day): Day = {
-  var d = day
+  var d = day - 1
   while (isHoliday(d)) d -= 1
   d
 }
@@ -53,8 +53,20 @@ val skip_holidays: Int = V {
   case Success(value) if 0 <= value && value <= 2 => value
   case _ => log warn s"please set SKIP_HOLIDAYS to correct number of non quoting days"; 0
 }
-val tradingDate = formerWorkingDay(yesterday)
+
+val tradingDate = formerWorkingDay(today)
 val tradingDateFormatted = tradingDate.toString("yyyy-MM-dd")
+log.info(s"tradingDateAny ($tradingDateFormatted), with datetime: ${tradingDate.dateTime}")
+
+// preserve midnight in local timezone Berlin
+val tradingDateTimeCet: DateTime = {
+  val eod: Day = tradingDate
+  val cet: DateTimeZone = TimeZone.forID("Europe/Berlin")
+  new DateTime(eod.year, eod.month, eod.day, 0, 0, 0, 0, cet)
+}
+log.info(s"tradingDateCet (${Day(tradingDateTimeCet).toString("yyyy-MM-dd")}), with datetime: $tradingDateTimeCet")
+require(tradingDateTimeCet.getHourOfDay == 0, "tradingDateTimeCet must be at midnight (hour=0)")
+
 val golden = uat.Masterdataprices
 
 def v[T](ot: Option[T])(error: String): V[Throwable, T] =
@@ -120,22 +132,27 @@ def vUpdate[T](bucketName: String, masterdataprices: golden.Entity, goldenSource
 
   val cbName = masterdataprices.containerBucket.fold("")(t => t._1 + "." + t._2)
   val nCols = goldenSource.getColumnCount - 1
-  val lastDay: Day = {
+
+  /*
+  * last day = last entry in bucket in tz Europe/Berlin
+  * required for update condition
+  */
+  val lastEntryCet: Day = {
     val lastRow: DataRow = goldenSource.getRow(goldenSource.getRowCount - 1)
     val firstColumn: DataColumn = goldenSource.getColumn(1)
+    // reads time from CDS with tz offset
     val dt = new DateTime(lastRow.getValue(firstColumn))
+    // preserve tz offset, avoiding Day(utc) yielding the day before
     Day(dt.withZone(DateTimeZone.forID("Europe/Berlin")))
   }
-  val lastDayFormatted = lastDay.toString("yyyy-MM-dd")
+  val lastEntryCetFormatted = lastEntryCet.toString("yyyy-MM-dd")
   val updateCondition: Boolean = {
-    lastDay.isBefore(tradingDate) &&
-      (lastDay.until(tradingDate).filterNot(_.isWeekend).size - 1 == skip_holidays) // skipping non-quoting days
+    lastEntryCet.isBefore(tradingDate) &&
+      (lastEntryCet.until(tradingDate).filterNot(_.isWeekend).size - 1 == skip_holidays) // skipping non-quoting days
   }
   if (updateCondition) {
     val row = goldenSource.newRow()
-    //val tz: DateTimeZone = TimeZone.forID(market.timeZoneName)
-    val tz: DateTimeZone = TimeZone.forID("Europe/Berlin")
-    row.setValue(1, tradingDate.dateTime.withZone(tz)) //tradingDate.toString("yyyy-MM-dd")
+    row.setValue(1, tradingDateTimeCet) //preserve cet timezone: T00:00:00.00000+02:00
 
     // Done: handle gaps in prices update
     val gran = """(^.*_([mqy])$)""".r
@@ -163,7 +180,7 @@ def vUpdate[T](bucketName: String, masterdataprices: golden.Entity, goldenSource
     log info s"${cbName.toLowerCase}   (APPENDED)"
     logRow(row)
   } else {
-    log info s"${cbName.toLowerCase}   (SKIPPED)   last entry was: $lastDayFormatted."
+    log info s"${cbName.toLowerCase}   (SKIPPED)   last entry was: $lastEntryCetFormatted."
     //logRow(goldenSource.getRow(goldenSource.getRowCount - 1))
   }
   goldenSource
@@ -206,11 +223,11 @@ List(
 ) foreach { case (containerName, bucketName, goldenSourceName, market) =>
 
   if (skip_holidays == 0) {
-    log info s"------------------------------------------------------------------"
-    log info s"updating $goldenSourceName @ $tradingDateFormatted for market ${market.name}"
+    log info s"=============================================="
+    log info s"updating $goldenSourceName @ $tradingDateFormatted"
   } else {
-    log warn s"------------------------------------------------------------------"
-    log warn s"updating $goldenSourceName @ $tradingDateFormatted for market ${market.name}, skipping $skip_holidays holidays."
+    log warn s"=============================================="
+    log warn s"updating $goldenSourceName @ $tradingDateFormatted, skipping $skip_holidays holidays."
   }
 
   // no logging here
@@ -227,8 +244,10 @@ List(
     } yield {
       for {
         targetDataTable <- v {
+          log.info("----------------------")
+          log.info(f"attempting delta: $delta%.2f")
           masterdataprices.dataTable
-        }("")
+        }(s"${targetBucketName} dataTable did not exist")
         updatedDataTable <- vUpdate(bucketName, masterdataprices, targetDataTable, update, market)
         result <- V(uat.ocds.get.writeDataTable("masterdataprices", targetBucketName, updatedDataTable)) //bucket write table
       } yield {
