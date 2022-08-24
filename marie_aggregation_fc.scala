@@ -48,6 +48,7 @@ def formerWorkingDay(day: Day): Day = {
 }
 
 val tradingDate = formerWorkingDay(Day(now.withZone(cet)))
+log info layout
 log info s"updating golden sources for trading date $tradingDate"
 log info layout
 
@@ -106,16 +107,16 @@ List(
 
   val vResult = for {
 
-    masterdataprices <- v(golden get goldenSourceName)(s"golden source $goldenSourceName not available")
-    source <- v(masterdataprices.dataTable)(s"data table of golden source $goldenSourceName is missing")
-    _ <- V(log info s"got data table of golden source $goldenSourceName")
+    masterdataprices <- v(golden get goldenSourceName)(s"$goldenSourceName: golden source not available")
+    source <- v(masterdataprices.dataTable)(s"$goldenSourceName: data table of golden source is missing")
+    _ <- V(log info s"$goldenSourceName: got data table of golden source")
     (lastTradingDate, lastPrices) <- vFormerPrices(source)
-    _ <- V(log info s"got last entry $lastTradingDate of golden source $goldenSourceName")
-    _ <- V { if (lastTradingDate == tradingDate) throw new Throwable("traded day exists already") }
-    container <- v(in get containerName)(s"forward curve container $containerName not available")
-    bucket <- v(container get s"${bucketName}_$tradingDate")(s"forward curve bucket $bucketName not available")
-    dataTable <- v(bucket.dataTable)(s"forward curve data table $bucketName not available")
-    _ <- V(log info s"got data table of forward curve ${containerName}.$bucketName")
+    _ <- V(log info s"$goldenSourceName: got last entry $lastTradingDate of golden source")
+    _ <- V { if (lastTradingDate == tradingDate) throw new Throwable(s"$goldenSourceName: traded day exists already") }
+    container <- v(in get containerName)(s"$goldenSourceName: forward curve container $containerName not available")
+    bucket <- v(container get s"${bucketName}_$tradingDate")(s"$goldenSourceName: forward curve bucket $bucketName not available")
+    dataTable <- v(bucket.dataTable)(s"$goldenSourceName: forward curve data table $bucketName not available")
+    _ <- V(log info s"$goldenSourceName: got data table of forward curve ${containerName}.$bucketName")
     oMthly <- V {
       val ts = Series(
         dataTable.toArray map { row =>
@@ -124,62 +125,48 @@ List(
           (t, x)
         }
       )
-      log info s"fwd prices starting at: ${ts.head}"
-      log info s"           ending   at: ${ts.last}"
-      log info s"           are regular: ${ts.mapTime(_.getMillis).isRegular}"
+      log info s"$goldenSourceName: fwd prices starting at: ${ts.head}"
+      log info s"$goldenSourceName:            ending   at: ${ts.last}"
+      log info s"$goldenSourceName:           are regular: ${ts.mapTime(_.getMillis).isRegular}"
       val loaded = load.asInstanceOf[Load] match {
         case Peak =>
-          log info "filtering for peak hours"
+          log info s"$goldenSourceName: filtering for peak hours"
           ts.filterTime(isPeak)
         case _ =>
           ts
       }
-      log info s"loaded prices starting at: ${loaded.head}"
-      log info s"               ending  at: ${loaded.last}"
       val mthly = loaded.rollBy({ case (t, _) => Month(t) })(_.mean)
-      log info s"monthly prices starting at: ${mthly.head}"
-      log info s"               ending   at: ${mthly.last}"
-      (tradingMonth to horizon) toSeries { t =>
-        mthly.get(t) match {
-
-          case None =>
-            log warn s"got no price for $t"
-            None
-
-          case some =>
-            some
-        }
-      }
+      log info s"$goldenSourceName: monthly prices starting at: ${mthly.head}"
+      log info s"$goldenSourceName:                ending   at: ${mthly.last}"
+      (tradingMonth to horizon) toSeries { t => mthly.get(t) }
     }
     if oMthly.exists(_._2.isDefined)
-    _ <- V(log info s"got price update")
-    _ <- V(if (true) oMthly.foreach(println))
+    _ <- V(log info s"$goldenSourceName: got price update")
     tail <- V(Interpolate.flatRight(oMthly))
-    _ <- V(log info s"got prices flatRight")
+    _ <- V(log info s"$goldenSourceName: got prices flatRight interpolated")
     prices <- V {
 
       oMthly.takeWhile(_._2.isEmpty).time.toList match {
 
         case Nil =>
-          log info "M00 provided by forward curve"
           tail
 
         case m00 :: Nil if lastPrices.isDefinedAt(m00) =>
           val lst = lastPrices(m00)
-          log warn s"only M00 was missing and got assigned by fallback from former trading date: $m00 -> $lst"
+          log warn s"$goldenSourceName: M00 was missing and got assigned by fallback from former trading date: $m00 -> $lst"
           Series(m00 -> lst) ++ tail
 
         case m00 :: rem if lastPrices.isDefinedAt(m00) =>
           val lst = lastPrices(m00)
-          log warn s"M00 was missing and got assigned by fallback from former trading date: $m00 -> $lst"
-          log warn "additional values got filled up from right"
+          log warn s"$goldenSourceName: M00 was missing and got assigned by fallback from former trading date: $m00 -> $lst"
+          log warn s"$goldenSourceName: additional values got filled up from right"
           Series(m00 -> lst) ++ rem.toSeries(_ => tail.firstValue) ++ tail
 
         case _ =>
-          throw new Throwable(s"as fall back no former M00 given from former trading date ")
+          throw new Throwable(s"$goldenSourceName: failed to use M00 from former trading date")
       }
     }
-    _ <- V(log info "derived monthly prices from forward curve container")
+    _ <- V(log info s"$goldenSourceName: derived monthly prices from forward curve container")
     newSource <- vUpdate(source, prices)
     result <- V(masterdataprices.writeToCds(newSource))
 
@@ -188,11 +175,11 @@ List(
   vResult match {
 
     case Success(_) =>
-      log info s"updated $goldenSourceName"
+      log info s"$goldenSourceName: updated"
 
     case Failure(throwable: Throwable) =>
-      log error s"failed to update $goldenSourceName due to ${throwable.getMessage}"
+      log error s"$goldenSourceName: failed to update due to ${throwable.getMessage}"
   }
 
   log info layout
-}
+} 
