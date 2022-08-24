@@ -8,6 +8,7 @@ case object Nope extends Load
 val in = new Service("prd", Some(dsPrd), Some(cdsPrd)) with Containers with Markets with Lim2
 val out = new Service("uat", Some(dsUat), Some(cdsUat)) with Containers with Markets with Lim2
 implicit val wb = RISK_CALCULATOR
+val cet = DateTimeZone.forID("Europe/Berlin")
 val layout = "----------------------------------------------------------------------"
 
 def isHoliday(day: Day): Boolean = day.isWeekend || List(
@@ -46,7 +47,7 @@ def formerWorkingDay(day: Day): Day = {
   d
 }
 
-val tradingDate = formerWorkingDay(today)
+val tradingDate = formerWorkingDay(Day(now.withZone(cet)))
 log info s"updating golden sources for trading date $tradingDate"
 log info layout
 
@@ -123,8 +124,8 @@ List(
           (t, x)
         }
       )
-      log info s"fwd prices starting at: ${ts.start}"
-      log info s"           ending   at: ${ts.end}"
+      log info s"fwd prices starting at: ${ts.head}"
+      log info s"           ending   at: ${ts.last}"
       log info s"           are regular: ${ts.mapTime(_.getMillis).isRegular}"
       val loaded = load.asInstanceOf[Load] match {
         case Peak =>
@@ -133,12 +134,24 @@ List(
         case _ =>
           ts
       }
+      log info s"loaded prices starting at: ${loaded.head}"
+      log info s"               ending  at: ${loaded.last}"
       val mthly = loaded.rollBy({ case (t, _) => Month(t) })(_.mean)
-      log info s"monthly prices starting at: ${mthly.start}"
-      log info s"               ending   at: ${mthly.end}"
-      (tradingMonth to horizon).toSeries(mthly.get)
+      log info s"monthly prices starting at: ${mthly.head}"
+      log info s"               ending   at: ${mthly.last}"
+      (tradingMonth to horizon) toSeries { t =>
+        mthly.get(t) match {
+
+          case None =>
+            log warn s"got no price for $t"
+            None
+
+          case some =>
+            some
+        }
+      }
     }
-    if oMthly.forall(_._2.isEmpty)
+    if oMthly.exists(_._2.isDefined)
     _ <- V(log info s"got price update")
     _ <- V(if (true) oMthly.foreach(println))
     tail <- V(Interpolate.flatRight(oMthly))
