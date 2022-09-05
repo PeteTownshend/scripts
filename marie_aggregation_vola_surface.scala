@@ -1,6 +1,6 @@
 // TODO: check service used in line 144
 // TODO: add this k,v pair to the script config map <- important
-// "SKIP_HOLIDAYS"  -> "0",
+// "SKIP_HOLIDAYS"  -> "0", otherwise it is dynamically calculated
 
 import eet.io.cds.DataRow
 import org.joda.time.{DateTime, DateTimeZone}
@@ -47,13 +47,6 @@ def formerWorkingDay(day: Day): Day = {
   d
 }
 
-val skip_holidays: Int = V {
-  config.getString("SKIP_HOLIDAYS").toInt
-} match {
-  case Success(value) if 0 <= value && value <= 2 => value
-  case _ => log warn s"please set SKIP_HOLIDAYS to correct number of non quoting days"; 0
-}
-
 val tradingDate = formerWorkingDay(today)
 val tradingDateFormatted = tradingDate.toString("yyyy-MM-dd")
 log.info(s"tradingDateAny ($tradingDateFormatted), with datetime: ${tradingDate.dateTime}")
@@ -66,6 +59,19 @@ val tradingDateTimeCet: DateTime = {
 }
 log.info(s"tradingDateCet (${Day(tradingDateTimeCet).toString("yyyy-MM-dd")}), with datetime: $tradingDateTimeCet")
 require(tradingDateTimeCet.getHourOfDay == 0, "tradingDateTimeCet must be at midnight (hour=0)")
+
+val skip_holidays: Int = V {
+  config.getString("SKIP_HOLIDAYS").toInt
+} match {
+  case Success(value) if 0 <= value && value <= 2 => value
+  case _ =>
+    val holidays: Set[Day] = formerWorkingDay(tradingDate).until(tradingDate)
+      .tail
+      .filterNot(_.isWeekend)
+      .filter(isHoliday)
+    log info s"skipping HOLIDAYS: ${holidays.map(_.toString("yyyy-MM-dd")).toList.mkString(", ")}"
+    holidays.size
+}
 
 val golden = uat.Masterdataprices
 
